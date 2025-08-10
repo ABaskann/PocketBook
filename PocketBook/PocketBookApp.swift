@@ -11,7 +11,8 @@ import SwiftUI
 struct PocketBookApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            LibraryView()
+                           .modelContainer(for: [Book.self])
         }
     }
 }
