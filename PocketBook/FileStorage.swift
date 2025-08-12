@@ -34,6 +34,12 @@ enum FileStorage {
         return bookDir.appendingPathComponent("book.pdf")
     }
     
+    // YENİ: E-kitap URL'si
+    static func ebookURL(for bookID: UUID) throws -> URL {
+        let bookDir = try bookDirectory(for: bookID)
+        return bookDir.appendingPathComponent("book.json")
+    }
+    
     // New method to save book file data
     static func saveBookFile(bookId: UUID, data: Data) throws -> URL {
         let pdfURL = try pdfURL(for: bookId)
@@ -42,11 +48,23 @@ enum FileStorage {
         return pdfURL
     }
     
-    // Helper method to check if a book file exists
+    // GÜNCELLENECEK: Helper method to check if a book file exists
     static func bookFileExists(for bookID: UUID) -> Bool {
         do {
             let pdfURL = try pdfURL(for: bookID)
-            return FileManager.default.fileExists(atPath: pdfURL.path)
+            let ebookURL = try ebookURL(for: bookID)
+            return FileManager.default.fileExists(atPath: pdfURL.path) ||
+                   FileManager.default.fileExists(atPath: ebookURL.path)
+        } catch {
+            return false
+        }
+    }
+    
+    // YENİ: Check if book is in e-book format
+    static func isEBook(for bookID: UUID) -> Bool {
+        do {
+            let ebookURL = try ebookURL(for: bookID)
+            return FileManager.default.fileExists(atPath: ebookURL.path)
         } catch {
             return false
         }
@@ -55,9 +73,15 @@ enum FileStorage {
     // Helper method to get file size
     static func bookFileSize(for bookID: UUID) -> Int64? {
         do {
-            let pdfURL = try pdfURL(for: bookID)
-            let attributes = try FileManager.default.attributesOfItem(atPath: pdfURL.path)
-            return attributes[.size] as? Int64
+            if isEBook(for: bookID) {
+                let ebookURL = try ebookURL(for: bookID)
+                let attributes = try FileManager.default.attributesOfItem(atPath: ebookURL.path)
+                return attributes[.size] as? Int64
+            } else {
+                let pdfURL = try pdfURL(for: bookID)
+                let attributes = try FileManager.default.attributesOfItem(atPath: pdfURL.path)
+                return attributes[.size] as? Int64
+            }
         } catch {
             return nil
         }

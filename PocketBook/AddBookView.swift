@@ -19,17 +19,18 @@ struct AddBookView: View {
     @State private var showingPicker = false
     @State private var showingScanner = false
     @State private var isProcessing = false
+    @State private var useEBookFormat = true // Yeni seçenek
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Book Info") {
-                    TextField("Title", text: $title)
-                    TextField("Author", text: $author)
+                Section("Kitap Bilgisi") {
+                    TextField("Başlık", text: $title)
+                    TextField("Yazar", text: $author)
                 }
                 
-                Section("Content") {
-                    Button("Scan Document Pages") {
+                Section("İçerik") {
+                    Button("Sayfa Tara") {
                         showingScanner = true
                     }
                     
@@ -37,13 +38,25 @@ struct AddBookView: View {
                         HStack {
                             Image(systemName: "doc.text.fill")
                                 .foregroundColor(.green)
-                            Text("\(scannedImages.count) pages scanned")
+                            Text("\(scannedImages.count) sayfa tarandı")
                                 .foregroundColor(.green)
                         }
                     }
+                    
+                    Toggle("E-kitap formatında kaydet", isOn: $useEBookFormat)
+                    
+                    if useEBookFormat {
+                        Text("OCR ile metin çıkarılıp e-kitap formatında kaydedilir")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("PDF formatında kaydedilir")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
-                Section("Cover") {
+                Section("Kapak") {
                     if let img = coverImage {
                         Image(uiImage: img)
                             .resizable()
@@ -53,12 +66,12 @@ struct AddBookView: View {
                     }
                     
                     HStack {
-                        Button("Select Cover Image") {
+                        Button("Kapak Resmi Seç") {
                             showingPicker = true
                         }
                         
                         if !scannedImages.isEmpty {
-                            Button("Use First Page as Cover") {
+                            Button("İlk Sayfayı Kapak Yap") {
                                 coverImage = scannedImages.first
                             }
                         }
@@ -69,21 +82,25 @@ struct AddBookView: View {
                     Section {
                         HStack {
                             ProgressView()
-                            Text("Processing and saving book...")
+                            if useEBookFormat {
+                                Text("Metin çıkarılıyor ve kitap kaydediliyor...")
+                            } else {
+                                Text("PDF oluşturuluyor ve kitap kaydediliyor...")
+                            }
                         }
                     }
                 }
             }
-            .navigationTitle("Add Book")
+            .navigationTitle("Kitap Ekle")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Kaydet") {
                         save()
                     }
                     .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || scannedImages.isEmpty || isProcessing)
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("İptal") { dismiss() }
                 }
             }
             .sheet(isPresented: $showingPicker) {
@@ -102,12 +119,10 @@ struct AddBookView: View {
         print("Processing \(images.count) scanned images")
         scannedImages = images
         
-        // Auto-set title if empty
         if title.trimmingCharacters(in: .whitespaces).isEmpty {
-            title = "Scanned Document \(Date().formatted(date: .numeric, time: .omitted))"
+            title = "Taranan Belge \(Date().formatted(date: .numeric, time: .omitted))"
         }
         
-        // Auto-set cover image if not already set
         if coverImage == nil, let firstImage = images.first {
             coverImage = firstImage
         }
@@ -125,25 +140,24 @@ struct AddBookView: View {
         
         Task {
             do {
-                // Create book
+                // Kitap oluştur
                 let book = Book(
                     id: UUID(),
                     title: title.trimmingCharacters(in: .whitespaces),
                     author: author.isEmpty ? nil : author,
-                    coverImageData: coverImage?.jpegData(compressionQuality: 0.8),
+                    coverImageData: coverImage?.jpegData(compressionQuality: 0.8)
                 )
                 
                 print("Created book: \(book.title) with ID: \(book.id)")
                 
-                // Create PDF from scanned images
-                let pdfData = try await createPDFFromImages(scannedImages)
-                print("Created PDF with \(pdfData.count) bytes")
+                if useEBookFormat {
+                    // E-kitap formatında kaydet
+                    try await saveAsEBook(book: book, images: scannedImages)
+                } else {
+                    // PDF formatında kaydet
+                    try await saveAsPDF(book: book, images: scannedImages)
+                }
                 
-                // Save PDF file
-                let fileURL = try FileStorage.saveBookFile(bookId: book.id, data: pdfData)
-                print("Saved PDF to: \(fileURL)")
-                
-                // Save to database on main thread
                 await MainActor.run {
                     modelContext.insert(book)
                     
@@ -162,10 +176,40 @@ struct AddBookView: View {
                 print("Failed to save book: \(error)")
                 await MainActor.run {
                     isProcessing = false
-                    // You might want to show an alert here
                 }
             }
         }
+    }
+    
+    private func saveAsEBook(book: Book, images: [UIImage]) async throws {
+        // OCR ile metin çıkar
+        let pageTexts = try await TextExtractionService.extractText(from: images)
+        let processedBook = TextExtractionService.processText(pageTexts)
+        
+        // JSON formatında kaydet
+        let bookData = EBookData(
+            title: book.title,
+            author: book.author,
+            pages: pageTexts.map { EBookPage(pageNumber: $0.pageNumber, text: $0.text) },
+            paragraphs: processedBook.paragraphs,
+            fullText: processedBook.fullText
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let jsonData = try encoder.encode(bookData)
+        
+        // E-kitap dosyasını kaydet
+        let ebookURL = try FileStorage.ebookURL(for: book.id)
+        try jsonData.write(to: ebookURL)
+        
+        print("E-book saved to: \(ebookURL)")
+    }
+    
+    private func saveAsPDF(book: Book, images: [UIImage]) async throws {
+        let pdfData = try await createPDFFromImages(images)
+        let fileURL = try FileStorage.saveBookFile(bookId: book.id, data: pdfData)
+        print("PDF saved to: \(fileURL)")
     }
     
     private func createPDFFromImages(_ images: [UIImage]) async throws -> Data {
@@ -190,7 +234,6 @@ struct AddBookView: View {
                     
                     pdfContext.beginPDFPage(nil)
                     
-                    // Calculate scaling to fit image in page
                     let imageSize = image.size
                     let pageSize = mediaBox.size
                     
@@ -220,9 +263,4 @@ struct AddBookView: View {
             }
         }
     }
-}
-
-enum BookError: Error {
-    case pdfCreationFailed
-    case fileStorageError
 }
